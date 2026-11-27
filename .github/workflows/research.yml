@@ -7,8 +7,8 @@ run-name: research
 on:
   workflow_dispatch:
     inputs:
-      phase: { description: plan or judge, required: true, type: choice, options: [plan, judge] }
-      topic: { description: topic id, required: true, type: string }
+      phase: { description: 'plan, judge or unpublish', required: true, type: choice, options: [plan, judge, unpublish] }
+      topic: { description: 'topic id, or deletion id for unpublish', required: true, type: string }
       question: { description: question id (judge), required: false, type: string, default: '' }
 permissions: {}            # GITHUB_TOKEN gets nothing
 concurrency:
@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Check inputs
         run: |
-          [[ "$PHASE" =~ ^(plan|judge)$ && "$TOPIC" =~ ^[a-z0-9]{6,32}$ && "$QUESTION" =~ ^[a-z0-9]{0,32}$ ]] || exit 1
+          [[ "$PHASE" =~ ^(plan|judge|unpublish)$ && "$TOPIC" =~ ^[a-z0-9]{6,32}$ && "$QUESTION" =~ ^[a-z0-9]{0,32}$ ]] || exit 1
           echo "::add-mask::$TOPIC"; [ -z "$QUESTION" ] || echo "::add-mask::$QUESTION"
           mkdir -p "$WORK"; : > "$LOG"
 
@@ -42,6 +42,7 @@ jobs:
           } >>"$LOG" 2>&1
 
       - name: Set up tools
+        if: inputs.phase != 'unpublish'
         run: |
           {
             sudo apt-get -qq update && sudo apt-get -qq install -y ffmpeg
@@ -57,6 +58,7 @@ jobs:
         run: python3 cockpit/research/skills/runner/fetch.py >>"$LOG" 2>&1
 
       - name: Claude
+        if: inputs.phase != 'unpublish'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: bash cockpit/research/skills/runner/claude.sh >>"$LOG" 2>&1
@@ -70,6 +72,16 @@ jobs:
           R2_BUCKET: ${{ secrets.NOTES_BUCKET }}
           PUBLISH_HOST: notes.bunnylog.ca
         run: bash cockpit/research/skills/runner/publish.sh >>"$LOG" 2>&1
+
+      - name: Unpublish
+        if: inputs.phase == 'unpublish'
+        env:
+          R2_S3_ACCESS_KEY_ID: ${{ secrets.NOTES_S3_ACCESS_KEY_ID }}
+          R2_S3_SECRET_ACCESS_KEY: ${{ secrets.NOTES_S3_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.NOTES_BUCKET }}
+          PUBLISH_HOST: notes.bunnylog.ca
+        run: bash cockpit/research/skills/runner/unpublish.sh >>"$LOG" 2>&1
 
       - name: Report
         if: always()
