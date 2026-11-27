@@ -1,0 +1,86 @@
+# research-runner: .github/workflows/research.yml. Source of truth: cockpit research/runner/workflow/research.yml.
+# Started by the Research API with workflow_dispatch. Inputs are opaque ids only.
+# Logging: every step's output goes to a private log file, never to the public log, which shows step
+# names and pass/fail only. The Report step uploads that log to the Research API (R2, behind Access).
+name: research
+run-name: research
+on:
+  workflow_dispatch:
+    inputs:
+      phase: { description: plan or judge, required: true, type: choice, options: [plan, judge] }
+      topic: { description: topic id, required: true, type: string }
+      question: { description: question id (judge), required: false, type: string, default: '' }
+permissions: {}            # GITHUB_TOKEN gets nothing
+concurrency:
+  group: research-${{ github.run_id }}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PHASE: ${{ inputs.phase }}
+      TOPIC: ${{ inputs.topic }}
+      QUESTION: ${{ inputs.question }}
+      WORK: ${{ github.workspace }}/work
+      LOG: ${{ github.workspace }}/work/run.log
+    steps:
+      - name: Check inputs
+        run: |
+          [[ "$PHASE" =~ ^(plan|judge)$ && "$TOPIC" =~ ^[a-z0-9]{6,32}$ && "$QUESTION" =~ ^[a-z0-9]{0,32}$ ]] || exit 1
+          echo "::add-mask::$TOPIC"; [ -z "$QUESTION" ] || echo "::add-mask::$QUESTION"
+          mkdir -p "$WORK"; : > "$LOG"
+
+      - name: Check out cockpit (read-only)
+        env:
+          COCKPIT_READ_TOKEN: ${{ secrets.COCKPIT_READ_TOKEN }}
+        run: |
+          {
+            AUTH="Authorization: Basic $(printf 'x-access-token:%s' "$COCKPIT_READ_TOKEN" | base64 -w0)"
+            git -c http.extraHeader="$AUTH" clone --quiet --depth 1 --filter=blob:none --sparse \
+              https://github.com/MikeWeiZhou/cockpit.git cockpit
+            git -C cockpit -c http.extraHeader="$AUTH" sparse-checkout set research/skills
+          } >>"$LOG" 2>&1
+
+      - name: Set up tools
+        run: |
+          {
+            sudo apt-get -qq update && sudo apt-get -qq install -y ffmpeg
+            npm install -g --silent @anthropic-ai/claude-code
+          } >>"$LOG" 2>&1
+
+      - name: Fetch job
+        env:
+          API: https://research.zhoumike.com
+          ACCESS_ID: ${{ secrets.ACCESS_CLIENT_ID }}
+          ACCESS_SECRET: ${{ secrets.ACCESS_CLIENT_SECRET }}
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+        run: python3 cockpit/research/skills/runner/fetch.py >>"$LOG" 2>&1
+
+      - name: Claude
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: bash cockpit/research/skills/runner/claude.sh >>"$LOG" 2>&1
+
+      - name: Publish
+        if: inputs.phase == 'judge'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.NOTES_R2_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.NOTES_BUCKET }}
+          PUBLISH_HOST: notes.bunnylog.ca
+        run: bash cockpit/research/skills/runner/publish.sh >>"$LOG" 2>&1
+
+      - name: Report
+        if: always()
+        env:
+          API: https://research.zhoumike.com
+          ACCESS_ID: ${{ secrets.ACCESS_CLIENT_ID }}
+          ACCESS_SECRET: ${{ secrets.ACCESS_CLIENT_SECRET }}
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+          OUTCOME: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+        run: python3 cockpit/research/skills/runner/report.py >/dev/null 2>&1 || true
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$WORK" cockpit ~/.claude ~/.claude.json >/dev/null 2>&1 || true
