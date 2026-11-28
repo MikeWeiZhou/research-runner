@@ -75,6 +75,7 @@ jobs:
 
       - name: Unpublish
         if: inputs.phase == 'unpublish'
+        timeout-minutes: 45   # under the API's 60-minute lease, so Report always gets to say what happened
         env:
           R2_S3_ACCESS_KEY_ID: ${{ secrets.NOTES_S3_ACCESS_KEY_ID }}
           R2_S3_SECRET_ACCESS_KEY: ${{ secrets.NOTES_S3_SECRET_ACCESS_KEY }}
